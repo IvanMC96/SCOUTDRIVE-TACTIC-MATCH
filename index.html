@@ -299,6 +299,10 @@ select{-webkit-appearance:none;appearance:none;background-image:linear-gradient(
 .upload-progress .bar.indeterminate{width:40%;animation:uploadslide 1.1s ease-in-out infinite;}
 @keyframes uploadslide{0%{margin-left:-40%;}100%{margin-left:100%;}}
 
+/* ---------- En directo (embed OBS/YouTube) ---------- */
+.live-embed-wrap{position:relative;width:100%;padding-top:56.25%;background:#000;border-radius:16px;overflow:hidden;}
+.live-embed-wrap iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0;}
+
 </style>
 <body>
 <div id="app">
@@ -447,6 +451,13 @@ select{-webkit-appearance:none;appearance:none;background-image:linear-gradient(
       <div id="clipsHost"></div>
     </section>
 
+    <!-- ===================== EN DIRECTO (OBS del analista) ===================== -->
+    <section class="tabpanel" id="tab-directo">
+      <h2>🔴 En directo</h2>
+      <p class="hint" style="text-align:left;margin-bottom:14px;">Mira aquí en directo lo que graba tu analista con OBS, sin salir de la app.</p>
+      <div id="directoHost"></div>
+    </section>
+
     <!-- ===================== RESUMEN ===================== -->
     <section class="tabpanel" id="tab-resumen">
       <h2>Resumen del partido</h2>
@@ -470,6 +481,7 @@ select{-webkit-appearance:none;appearance:none;background-image:linear-gradient(
     <button data-tab="notas"><span class="ic">🎙</span>Notas</button>
     <button data-tab="cambios"><span class="ic">🔁</span>Cambios</button>
     <button data-tab="clips"><span class="ic">🎥</span>Clips<span class="navbadge hidden" id="clipsBadge">0</span></button>
+    <button data-tab="directo"><span class="ic">🔴</span>Directo</button>
     <button data-tab="resumen"><span class="ic">📤</span>Resumen</button>
   </div>
 </div>
@@ -726,6 +738,7 @@ function freshMatch(rivalTeamId, rivalName, date){
     abp: freshAbpBundle(),
     cambios: [], notas: [],
     syncCode: null,
+    liveUrl: null,
   };
 }
 function defaultState(){
@@ -742,7 +755,7 @@ function defaultState(){
 function migrate(parsed){
   if(parsed && parsed.teams && parsed.ownTeamId){
     if(!parsed.sync || !("supabaseConfig" in parsed.sync)) parsed.sync = { supabaseConfig: (parsed.sync&&parsed.sync.supabaseConfig)||null };
-    Object.values(parsed.matches||{}).forEach(m=>{ if(m.syncCode===undefined) m.syncCode=null; });
+    Object.values(parsed.matches||{}).forEach(m=>{ if(m.syncCode===undefined) m.syncCode=null; if(m.liveUrl===undefined) m.liveUrl=null; });
     return parsed;
   }
   if(parsed && Array.isArray(parsed.roster)){
@@ -754,6 +767,7 @@ function migrate(parsed){
       if(!m.diagrams.alineacionRival) m.diagrams.alineacionRival = freshDiagram(["Alineación Rival"]);
       Object.values(m.diagrams).forEach(d=>{ (d.variants||[]).forEach(v=>{ if(v.bg===undefined) v.bg=null; if(v.bgW===undefined){v.bgW=0;v.bgH=0;} }); });
       if(m.syncCode===undefined) m.syncCode=null;
+      if(m.liveUrl===undefined) m.liveUrl=null;
     });
     return { app:{name:"ScoutDrive · ABP Tactic", logo:null}, teams, ownTeamId:"own",
       matches: parsed.matches||{}, matchOrder: parsed.matchOrder||[], currentMatchId: parsed.currentMatchId||null,
@@ -853,6 +867,7 @@ function showTab(name){
   if(name==="notas") renderNotas();
   if(name==="cambios") renderCambios();
   if(name==="clips") renderClips();
+  if(name==="directo") renderDirecto();
   if(name==="resumen") renderResumen();
 }
 function initNav(){
@@ -2354,6 +2369,66 @@ function openClipViewer(c){
       if(c.storagePath) sbClient.storage.from("clips").remove([c.storagePath]).then(()=>{});
       closeModal(); toast("Clip eliminado");
     });
+  };
+}
+
+/* ---- pestaña En directo (transmisión OBS→YouTube del analista) ---- */
+function extractYouTubeId(raw){
+  try{
+    const u=new URL(String(raw||"").trim());
+    const host=u.hostname.replace(/^www\./,"");
+    if(host==="youtu.be") return u.pathname.slice(1)||null;
+    if(host==="youtube.com"||host==="m.youtube.com"){
+      if(u.pathname==="/watch") return u.searchParams.get("v");
+      if(u.pathname.startsWith("/live/")) return u.pathname.split("/")[2]||null;
+      if(u.pathname.startsWith("/embed/")) return u.pathname.split("/")[2]||null;
+    }
+  }catch(e){}
+  return null;
+}
+function youtubeEmbedUrl(raw){
+  const id=extractYouTubeId(raw);
+  return id ? `https://www.youtube.com/embed/${id}?autoplay=1` : null;
+}
+function renderDirecto(forceEdit){
+  const host=document.getElementById("directoHost");
+  if(!host) return;
+  const m=curMatch();
+  if(!m){ host.innerHTML=""; return; }
+  if(!m.liveUrl || forceEdit){
+    host.innerHTML=`
+      <div class="card">
+        <p class="hint" style="text-align:left;margin:0 0 10px;">Pega aquí el enlace de la transmisión en directo de tu analista (por ejemplo, un enlace "No listado" de YouTube Live). Se verá aquí mismo, dentro de la app.</p>
+        <div class="field"><label class="lbl">Enlace de la transmisión</label><input type="text" id="fLiveUrl" value="${escapeHtml(m.liveUrl||'')}" placeholder="https://youtube.com/watch?v=..."></div>
+        <button class="btn primary block" id="btnSaveLive">Guardar y ver en directo</button>
+        ${m.liveUrl?'<button class="btn block" id="btnCancelLive" style="margin-top:8px;">Cancelar</button>':''}
+      </div>
+      <p class="hint">¿Tu analista todavía no sabe cómo transmitir? Dile que abra OBS → "Transmitir en directo" → YouTube → visibilidad "No listado", y que te mande el enlace que le da YouTube.</p>
+    `;
+    document.getElementById("btnSaveLive").onclick=()=>{
+      const val=document.getElementById("fLiveUrl").value.trim();
+      if(!val){ toast("Pega el enlace primero"); return; }
+      m.liveUrl=val; saveState(); renderDirecto();
+    };
+    const cancelBtn=document.getElementById("btnCancelLive");
+    if(cancelBtn) cancelBtn.onclick=()=>renderDirecto();
+    return;
+  }
+  const embed=youtubeEmbedUrl(m.liveUrl);
+  host.innerHTML=`
+    <div class="live-embed-wrap">
+      ${embed?`<iframe src="${escapeHtml(embed)}" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`:`<div class="empty">No he podido reconocer ese enlace como uno de YouTube. Comprueba que lo has copiado bien, o ábrelo en pestaña nueva.</div>`}
+    </div>
+    <div class="row wrap" style="margin-top:10px;">
+      <a class="btn sm" href="${escapeHtml(m.liveUrl)}" target="_blank" rel="noopener">↗ Abrir en pestaña nueva</a>
+      <button class="btn sm" id="btnEditLive">✎ Cambiar enlace</button>
+      <button class="btn sm" style="background:var(--bad);border-color:var(--bad)" id="btnRemoveLive">🗑 Quitar</button>
+    </div>
+  `;
+  document.getElementById("btnEditLive").onclick=()=>renderDirecto(true);
+  document.getElementById("btnRemoveLive").onclick=()=>{
+    if(!confirm("¿Quitar el enlace en directo?")) return;
+    m.liveUrl=null; saveState(); renderDirecto();
   };
 }
 
