@@ -796,7 +796,7 @@ function freshAbpBundle(){
   ABP_DEFAULT_TYPES.forEach(t=>{ bundle[t.id]={ label:t.label, ic:t.ic, custom:false, diagram: freshDiagram(ABP_VARIANT_LABELS) }; });
   return bundle;
 }
-function freshTeam(name){ return { id:uid(), name, logo:null, competition:"2ª RFEF · Grupo IV", roster:[] }; }
+function freshTeam(name){ return { id:uid(), name, logo:null, competition:"2ª RFEF · Grupo IV", roster:[], updatedAt:Date.now() }; }
 function freshMatch(rivalTeamId, rivalName, date){
   return {
     id: uid(), rivalTeamId: rivalTeamId||null, rival: rivalName || "Rival", date: date || todayISO(), competition:"",
@@ -812,11 +812,12 @@ function freshMatch(rivalTeamId, rivalName, date){
     cambios: [], notas: [],
     syncCode: null,
     liveUrl: null,
+    updatedAt: Date.now(),
   };
 }
 function defaultState(){
   const roster = SEED_ROSTER.map(p=>({ id:uid(), number:p.number, name:p.name, pos:p.pos||"", photo:p.photo, active:true }));
-  const own = { id:"own", name:"C.D. Don Benito", logo:null, competition:"2ª RFEF · Grupo IV", roster };
+  const own = { id:"own", name:"C.D. Don Benito", logo:null, competition:"2ª RFEF · Grupo IV", roster, updatedAt:Date.now() };
   const m = freshMatch(null, "Rival", todayISO());
   return {
     app: { name:"ScoutDrive · ABP Tactic", logo:null },
@@ -828,11 +829,12 @@ function defaultState(){
 function migrate(parsed){
   if(parsed && parsed.teams && parsed.ownTeamId){
     if(!parsed.sync || !("supabaseConfig" in parsed.sync)) parsed.sync = { supabaseConfig: (parsed.sync&&parsed.sync.supabaseConfig)||null };
-    Object.values(parsed.matches||{}).forEach(m=>{ if(m.syncCode===undefined) m.syncCode=null; if(m.liveUrl===undefined) m.liveUrl=null; });
+    Object.values(parsed.matches||{}).forEach(m=>{ if(m.syncCode===undefined) m.syncCode=null; if(m.liveUrl===undefined) m.liveUrl=null; if(!m.updatedAt) m.updatedAt=Date.now(); });
+    Object.values(parsed.teams||{}).forEach(t=>{ if(!t.updatedAt) t.updatedAt=Date.now(); });
     return parsed;
   }
   if(parsed && Array.isArray(parsed.roster)){
-    const own = { id:"own", name:(parsed.club&&parsed.club.name)||"C.D. Don Benito", logo:null, competition:"2ª RFEF · Grupo IV", roster: parsed.roster };
+    const own = { id:"own", name:(parsed.club&&parsed.club.name)||"C.D. Don Benito", logo:null, competition:"2ª RFEF · Grupo IV", roster: parsed.roster, updatedAt:Date.now() };
     const teams = { own };
     Object.values(parsed.matches||{}).forEach(m=>{
       m.rivalTeamId = null;
@@ -841,6 +843,7 @@ function migrate(parsed){
       Object.values(m.diagrams).forEach(d=>{ (d.variants||[]).forEach(v=>{ if(v.bg===undefined) v.bg=null; if(v.bgW===undefined){v.bgW=0;v.bgH=0;} }); });
       if(m.syncCode===undefined) m.syncCode=null;
       if(m.liveUrl===undefined) m.liveUrl=null;
+      if(!m.updatedAt) m.updatedAt=Date.now();
     });
     return { app:{name:"ScoutDrive · ABP Tactic", logo:null}, teams, ownTeamId:"own",
       matches: parsed.matches||{}, matchOrder: parsed.matchOrder||[], currentMatchId: parsed.currentMatchId||null,
@@ -858,11 +861,19 @@ function loadState(){
   return defaultState();
 }
 let saveTimer=null;
+function persistLocal(){
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+  catch(e){ toast("⚠️ No se pudo guardar (memoria llena)"); console.warn(e); }
+}
 function saveState(){
   clearTimeout(saveTimer);
   saveTimer=setTimeout(()=>{
-    try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
-    catch(e){ toast("⚠️ No se pudo guardar (memoria llena)"); console.warn(e); }
+    persistLocal();
+    // Casi toda edición de un partido (pizarra, ABP, notas, cambios, cronómetro, directo...)
+    // se hace sobre el partido activo — sincronizarlo aquí cubre todo eso sin tener que
+    // instrumentar cada función de edición una a una.
+    const m=curMatch();
+    if(m) queueMatchSync(m.id);
   },150);
 }
 function curMatch(){ return state.matches[state.currentMatchId]; }
@@ -1008,7 +1019,7 @@ function openAppSettings(){
     state.app.logo=newLogo;
     ownTeam().name=bd.querySelector("#fClubName").value.trim()||ownTeam().name;
     ownTeam().competition=bd.querySelector("#fComp").value.trim();
-    saveState(); closeModal(); refreshHeader(); renderPartido();
+    saveState(); queueTeamSync(state.ownTeamId); closeModal(); refreshHeader(); renderPartido();
   };
 }
 let clockInterval=null;
@@ -1087,7 +1098,7 @@ function openPlayerEditor(teamId, id){
     bd.querySelector("#mDelete").onclick=()=>{
       if(!confirm("¿Eliminar a "+p.name+" de la plantilla?")) return;
       team.roster=team.roster.filter(x=>x.id!==id);
-      saveState(); closeModal(); renderPlantilla();
+      saveState(); queueTeamSync(teamId); closeModal(); renderPlantilla();
     };
   }
   bd.querySelector("#mSave").onclick=()=>{
@@ -1097,7 +1108,7 @@ function openPlayerEditor(teamId, id){
     const rec={ id:id||uid(), name, number:numRaw===""?null:Number(numRaw), pos:bd.querySelector("#fPos").value, photo:newPhoto, active:bd.querySelector("#fActive").checked };
     if(isNew) team.roster.push(rec);
     else team.roster=team.roster.map(x=>x.id===id?rec:x);
-    saveState(); closeModal(); renderPlantilla();
+    saveState(); queueTeamSync(teamId); closeModal(); renderPlantilla();
   };
 }
 function openTeamSwitcher(){
@@ -1127,7 +1138,7 @@ function openTeamSwitcher(){
         delete state.teams[tid];
         Object.values(state.matches).forEach(m=>{ if(m.rivalTeamId===tid) m.rivalTeamId=null; });
         if(plantillaTeamId===tid) plantillaTeamId=state.ownTeamId;
-        saveState(); renderList();
+        saveState(); deleteTeamFromCloud(tid); renderList();
       };
     });
   }
@@ -1138,7 +1149,7 @@ function openTeamSwitcher(){
     if(!name) return;
     const t=freshTeam(name.trim());
     state.teams[t.id]=t; plantillaTeamId=t.id;
-    saveState(); renderList();
+    saveState(); queueTeamSync(t.id); renderList();
   };
 }
 function openTeamEditor(teamId, onDone){
@@ -1172,7 +1183,7 @@ function openTeamEditor(teamId, onDone){
     const name=bd.querySelector("#fTeamName").value.trim();
     if(!name){ toast("Ponle un nombre al equipo"); return; }
     t.name=name; t.competition=bd.querySelector("#fTeamComp").value.trim(); t.logo=newLogo;
-    saveState(); closeModal(); refreshHeader(); renderPartido(); renderInicio();
+    saveState(); queueTeamSync(teamId); closeModal(); refreshHeader(); renderPartido(); renderInicio();
     if(onDone) onDone();
     toast("Equipo actualizado ✅");
   };
@@ -1713,7 +1724,7 @@ function openOcrReview(dataUrl, imgW, imgH, ocrData, rivalTeamId, match){
       variant.tokens.push({playerId:player.id, x:en.x, y:en.y});
       count++;
     });
-    saveState(); closeModal();
+    saveState(); queueTeamSync(rivalTeamId); closeModal();
     toast(`${count} jugadores colocados en el campo`);
     renderRivalTab();
   };
@@ -1767,15 +1778,16 @@ function bindMatchListEvents(listEl){
   listEl.querySelectorAll(".match-chip").forEach(el=>{
     const id=el.dataset.id;
     const selBtn=el.querySelector('[data-act="select"]');
-    if(selBtn) selBtn.onclick=()=>{ state.currentMatchId=id; saveState(); renderPartido(); renderInicio(); refreshHeader(); toast("Partido activado"); };
+    if(selBtn) selBtn.onclick=()=>{ state.currentMatchId=id; saveState(); queueAppMetaSync(); renderPartido(); renderInicio(); refreshHeader(); toast("Partido activado"); };
     const editBtn=el.querySelector('[data-act="edit"]');
     if(editBtn) editBtn.onclick=()=>openMatchEditor(id);
     el.querySelector('[data-act="del"]').onclick=()=>{
       if(!confirm("¿Eliminar este partido y todos sus datos?")) return;
       delete state.matches[id]; state.matchOrder=state.matchOrder.filter(x=>x!==id);
+      deleteMatchFromCloud(id);
       if(state.currentMatchId===id) state.currentMatchId=state.matchOrder[state.matchOrder.length-1]||null;
-      if(!state.currentMatchId){ const nm=freshMatch(); state.matches[nm.id]=nm; state.matchOrder.push(nm.id); state.currentMatchId=nm.id; }
-      saveState(); renderPartido(); renderInicio(); refreshHeader();
+      if(!state.currentMatchId){ const nm=freshMatch(); state.matches[nm.id]=nm; state.matchOrder.push(nm.id); state.currentMatchId=nm.id; queueMatchSync(nm.id); }
+      saveState(); queueAppMetaSync(); renderPartido(); renderInicio(); refreshHeader();
     };
   });
 }
@@ -1859,7 +1871,7 @@ function openMatchEditor(id){
     if(rivalSel.value==="__new__"){
       const nm=prompt("Nombre del nuevo equipo rival:");
       if(nm){
-        const t=freshTeam(nm.trim()); state.teams[t.id]=t; saveState();
+        const t=freshTeam(nm.trim()); state.teams[t.id]=t; saveState(); queueTeamSync(t.id);
         const opt=document.createElement("option"); opt.value=t.id; opt.textContent=t.name; opt.selected=true;
         rivalSel.insertBefore(opt, rivalSel.querySelector('option[value="__new__"]'));
       } else { rivalSel.value = m&&m.rivalTeamId ? m.rivalTeamId : ""; }
@@ -1875,10 +1887,12 @@ function openMatchEditor(id){
     if(isNew){
       const nm=freshMatch(rivalTeamId, rivalName, date); nm.competition=comp;
       state.matches[nm.id]=nm; state.matchOrder.push(nm.id); state.currentMatchId=nm.id;
+      saveState(); queueMatchSync(nm.id); queueAppMetaSync();
     } else {
       m.rivalTeamId=rivalTeamId; m.rival=rivalName; m.date=date; m.competition=comp;
+      saveState(); queueMatchSync(m.id);
     }
-    saveState(); closeModal(); renderPartido(); renderInicio(); refreshHeader();
+    closeModal(); renderPartido(); renderInicio(); refreshHeader();
   };
 }
 function initPartidoNav(){
@@ -2335,6 +2349,7 @@ function checkInviteFromUrl(){
     if(!payload) return false;
     state.sync=state.sync||{}; state.sync.supabaseConfig=payload.cfg; saveState();
     history.replaceState({}, "", location.pathname);
+    startTeamsSync(); startMatchesSync(); startAppMetaSync();
     openAnalystMode(payload.code);
     return true;
   }catch(e){ return false; }
@@ -2393,6 +2408,268 @@ function updateClipsBadge(){
   const n=liveClips.length;
   badge.textContent = n>99 ? "99+" : String(n);
   badge.classList.toggle("hidden", n===0);
+}
+
+/* ================= SINCRONIZACIÓN DE EQUIPOS/PLANTILLAS (Supabase) =================
+   Sincroniza escudos, nombres y plantillas (con sus fotos) entre todos los dispositivos
+   que tengan configurado el mismo proyecto Supabase — al instante y sin código de partido,
+   porque los equipos son compartidos por todo el club, no de un partido concreto. */
+let teamsChannel=null, teamsSyncActive=false, teamsSyncWarned=false;
+const teamSyncTimers={};
+function teamsSyncReady(){ return !!(state.sync && state.sync.supabaseConfig && state.sync.supabaseConfig.url && state.sync.supabaseConfig.anonKey); }
+function teamToRow(t){
+  return { id:t.id, name:t.name, logo:t.logo||null, competition:t.competition||null, roster:t.roster||[],
+    is_own:t.id===state.ownTeamId, updated_at:new Date(t.updatedAt||Date.now()).toISOString() };
+}
+function rowToTeam(row){
+  return { id:row.id, name:row.name, logo:row.logo||null, competition:row.competition||"", roster:row.roster||[],
+    updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : Date.now() };
+}
+function warnTeamsSyncOnce(){
+  if(teamsSyncWarned) return; teamsSyncWarned=true;
+  toast("⚠️ Falta crear la tabla \"teams\" en Supabase — mira la guía de sincronización", 4200);
+}
+function pushTeamNow(teamId){
+  const t=state.teams[teamId];
+  if(!t || !teamsSyncReady()) return;
+  ensureSupabaseInit().then(()=>{
+    sbClient.from("teams").upsert(teamToRow(t)).then(({error})=>{
+      if(error){ console.warn("team sync push error", error); warnTeamsSyncOnce(); }
+    });
+  }).catch(()=>{});
+}
+function queueTeamSync(teamId){
+  const t=state.teams[teamId];
+  if(!t) return;
+  t.updatedAt=Date.now();
+  clearTimeout(teamSyncTimers[teamId]);
+  teamSyncTimers[teamId]=setTimeout(()=>pushTeamNow(teamId), 500);
+}
+function deleteTeamFromCloud(teamId){
+  if(!teamsSyncReady()) return;
+  ensureSupabaseInit().then(()=>{
+    sbClient.from("teams").delete().eq("id", teamId).then(({error})=>{ if(error) console.warn("team delete sync error", error); });
+  }).catch(()=>{});
+}
+function rerenderAfterTeamsSync(){
+  refreshHeader();
+  if(showTabName()==="inicio") renderInicio();
+  if(showTabName()==="partido") renderPartido();
+  if(showTabName()==="plantilla") renderPlantilla();
+  if(showTabName()==="rival" && typeof renderRivalTab==="function") renderRivalTab();
+}
+function applyRemoteTeamRow(row, opts){
+  opts=opts||{};
+  if(!row || !row.id) return;
+  if(opts.isDelete){
+    if(row.id===state.ownTeamId) return; // nunca se borra el equipo propio por sincronización
+    if(state.teams[row.id]){
+      delete state.teams[row.id];
+      Object.values(state.matches).forEach(m=>{ if(m.rivalTeamId===row.id) m.rivalTeamId=null; });
+      if(typeof plantillaTeamId!=="undefined" && plantillaTeamId===row.id) plantillaTeamId=state.ownTeamId;
+      persistLocal(); rerenderAfterTeamsSync();
+    }
+    return;
+  }
+  const incoming=rowToTeam(row);
+  const local=state.teams[incoming.id];
+  if(!local || (incoming.updatedAt||0) >= (local.updatedAt||0)){
+    state.teams[incoming.id]=incoming;
+    persistLocal(); rerenderAfterTeamsSync();
+  }
+}
+function pullTeamsOnce(){
+  return sbClient.from("teams").select("*").then(({data,error})=>{
+    if(error){ console.warn("teams pull error", error); warnTeamsSyncOnce(); return; }
+    (data||[]).forEach(row=>applyRemoteTeamRow(row));
+    const cloudIds=new Set((data||[]).map(r=>r.id));
+    Object.keys(state.teams).forEach(tid=>{ if(!cloudIds.has(tid)) pushTeamNow(tid); });
+  });
+}
+function startTeamsSync(){
+  if(!teamsSyncReady()){ stopTeamsSync(); return; }
+  if(teamsSyncActive) return;
+  teamsSyncActive=true;
+  ensureSupabaseInit().then(()=>{
+    pullTeamsOnce();
+    teamsChannel=sbClient.channel("teams-sync")
+      .on("postgres_changes", {event:"*", schema:"public", table:"teams"}, payload=>{
+        if(payload.eventType==="DELETE") applyRemoteTeamRow(payload.old, {isDelete:true});
+        else applyRemoteTeamRow(payload.new);
+      })
+      .subscribe();
+  }).catch(()=>{ teamsSyncActive=false; });
+}
+function stopTeamsSync(){
+  if(teamsChannel && sbClient){ try{ sbClient.removeChannel(teamsChannel); }catch(e){} }
+  teamsChannel=null; teamsSyncActive=false;
+}
+
+/* ================= SINCRONIZACIÓN DE PARTIDOS (Supabase) =================
+   Sincroniza cada partido COMPLETO (pizarra, estructuras, ABP, notas, cambios,
+   cronómetro, código de directo...) entre todos los dispositivos configurados con
+   el mismo proyecto Supabase — al instante, sin tener que hacer nada más. */
+let matchesChannel=null, matchesSyncActive=false, matchesSyncWarned=false;
+const matchSyncTimers={};
+function matchToRow(m){
+  return { id:m.id, data:m, updated_at:new Date(m.updatedAt||Date.now()).toISOString() };
+}
+function rowToMatch(row){
+  const d=row.data||{};
+  return Object.assign({}, d, { id:row.id, updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : Date.now() });
+}
+function warnMatchesSyncOnce(){
+  if(matchesSyncWarned) return; matchesSyncWarned=true;
+  toast("⚠️ Falta crear la tabla \"matches\" en Supabase — mira la guía de sincronización", 4200);
+}
+function pushMatchNow(matchId){
+  const m=state.matches[matchId];
+  if(!m || !teamsSyncReady()) return;
+  ensureSupabaseInit().then(()=>{
+    sbClient.from("matches").upsert(matchToRow(m)).then(({error})=>{
+      if(error){ console.warn("match sync push error", error); warnMatchesSyncOnce(); }
+    });
+  }).catch(()=>{});
+}
+function queueMatchSync(matchId){
+  const m=state.matches[matchId];
+  if(!m) return;
+  m.updatedAt=Date.now();
+  clearTimeout(matchSyncTimers[matchId]);
+  matchSyncTimers[matchId]=setTimeout(()=>pushMatchNow(matchId), 500);
+}
+function deleteMatchFromCloud(matchId){
+  if(!teamsSyncReady()) return;
+  ensureSupabaseInit().then(()=>{
+    sbClient.from("matches").delete().eq("id", matchId).then(({error})=>{ if(error) console.warn("match delete sync error", error); });
+  }).catch(()=>{});
+}
+function recomputeMatchOrder(){
+  state.matchOrder = Object.values(state.matches).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0)).map(m=>m.id);
+}
+function rerenderAfterMatchesSync(){
+  refreshHeader();
+  const tab=showTabName();
+  if(tab==="inicio") renderInicio();
+  if(tab==="partido") renderPartido();
+  if(tab==="pizarra") renderPizarra();
+  if(tab==="notas") renderNotas();
+  if(tab==="cambios") renderCambios();
+  if(tab==="rival") renderRivalTab();
+  if(tab==="clips") renderClips();
+  if(tab==="directo") renderDirecto();
+  if(tab==="resumen") renderResumen();
+  syncClipsForCurrentMatch();
+}
+function applyRemoteMatchRow(row, opts){
+  opts=opts||{};
+  if(!row || !row.id) return;
+  if(opts.isDelete){
+    if(state.matches[row.id]){
+      delete state.matches[row.id];
+      recomputeMatchOrder();
+      const wasCurrent = state.currentMatchId===row.id;
+      if(wasCurrent) state.currentMatchId=state.matchOrder[state.matchOrder.length-1]||null;
+      if(!state.currentMatchId){
+        const nm=freshMatch(); state.matches[nm.id]=nm; recomputeMatchOrder(); state.currentMatchId=nm.id; queueMatchSync(nm.id);
+      }
+      if(wasCurrent) queueAppMetaSync();
+      persistLocal(); rerenderAfterMatchesSync();
+    }
+    return;
+  }
+  const incoming=rowToMatch(row);
+  const local=state.matches[incoming.id];
+  if(!local || (incoming.updatedAt||0) >= (local.updatedAt||0)){
+    const isNewMatch=!local;
+    state.matches[incoming.id]=incoming;
+    if(isNewMatch) recomputeMatchOrder();
+    persistLocal(); rerenderAfterMatchesSync();
+  }
+}
+function pullMatchesOnce(){
+  return sbClient.from("matches").select("*").then(({data,error})=>{
+    if(error){ console.warn("matches pull error", error); warnMatchesSyncOnce(); return; }
+    (data||[]).forEach(row=>applyRemoteMatchRow(row));
+    const cloudIds=new Set((data||[]).map(r=>r.id));
+    Object.keys(state.matches).forEach(mid=>{ if(!cloudIds.has(mid)) pushMatchNow(mid); });
+  });
+}
+function startMatchesSync(){
+  if(!teamsSyncReady()){ stopMatchesSync(); return; }
+  if(matchesSyncActive) return;
+  matchesSyncActive=true;
+  ensureSupabaseInit().then(()=>{
+    pullMatchesOnce();
+    matchesChannel=sbClient.channel("matches-sync")
+      .on("postgres_changes", {event:"*", schema:"public", table:"matches"}, payload=>{
+        if(payload.eventType==="DELETE") applyRemoteMatchRow(payload.old, {isDelete:true});
+        else applyRemoteMatchRow(payload.new);
+      })
+      .subscribe();
+  }).catch(()=>{ matchesSyncActive=false; });
+}
+function stopMatchesSync(){
+  if(matchesChannel && sbClient){ try{ sbClient.removeChannel(matchesChannel); }catch(e){} }
+  matchesChannel=null; matchesSyncActive=false;
+}
+
+/* ================= SINCRONIZACIÓN DEL "PARTIDO ACTIVO" (Supabase) =================
+   Para que al entrar en cualquier dispositivo se vea el mismo partido que se está
+   trabajando en ese momento, no solo que los datos existan en algún sitio. Fila única. */
+let appMetaChannel=null, appMetaSyncActive=false, appMetaSyncTimer=null, appMetaUpdatedAt=0;
+function queueAppMetaSync(){
+  if(!teamsSyncReady()) return;
+  appMetaUpdatedAt=Date.now();
+  clearTimeout(appMetaSyncTimer);
+  appMetaSyncTimer=setTimeout(()=>{
+    ensureSupabaseInit().then(()=>{
+      sbClient.from("app_meta").upsert({ id:"singleton", current_match_id: state.currentMatchId,
+        updated_at:new Date(appMetaUpdatedAt).toISOString() }).then(({error})=>{
+          if(error) console.warn("app_meta sync push error", error);
+        });
+    }).catch(()=>{});
+  }, 500);
+}
+function applyRemoteAppMeta(row){
+  if(!row || !row.current_match_id) return;
+  const ts = row.updated_at ? new Date(row.updated_at).getTime() : 0;
+  if(ts < appMetaUpdatedAt) return; // lo nuestro es más reciente, no lo pisamos
+  appMetaUpdatedAt=ts;
+  if(row.current_match_id!==state.currentMatchId){
+    state.currentMatchId=row.current_match_id;
+    persistLocal();
+    refreshHeader();
+    const tab=showTabName();
+    if(tab==="inicio") renderInicio();
+    if(tab==="partido") renderPartido();
+    if(tab==="pizarra") renderPizarra();
+    if(tab==="notas") renderNotas();
+    if(tab==="cambios") renderCambios();
+    if(tab==="clips") renderClips();
+    if(tab==="directo") renderDirecto();
+    if(tab==="resumen") renderResumen();
+    syncClipsForCurrentMatch();
+  }
+}
+function startAppMetaSync(){
+  if(!teamsSyncReady()){ stopAppMetaSync(); return; }
+  if(appMetaSyncActive) return;
+  appMetaSyncActive=true;
+  ensureSupabaseInit().then(()=>{
+    sbClient.from("app_meta").select("*").eq("id","singleton").then(({data,error})=>{
+      if(error){ console.warn("app_meta pull error", error); return; }
+      if(data && data[0]) applyRemoteAppMeta(data[0]);
+      else queueAppMetaSync(); // nadie ha anunciado un partido activo todavía: proponemos el nuestro
+    });
+    appMetaChannel=sbClient.channel("app-meta-sync")
+      .on("postgres_changes", {event:"*", schema:"public", table:"app_meta"}, payload=>applyRemoteAppMeta(payload.new))
+      .subscribe();
+  }).catch(()=>{ appMetaSyncActive=false; });
+}
+function stopAppMetaSync(){
+  if(appMetaChannel && sbClient){ try{ sbClient.removeChannel(appMetaChannel); }catch(e){} }
+  appMetaChannel=null; appMetaSyncActive=false;
 }
 
 /* ---- pestaña Partido: tarjeta de sincronización ---- */
@@ -2456,14 +2733,14 @@ function openSyncSetupModal(){
     const cfg={ url:bd.querySelector("#fUrl").value.trim().replace(/\/+$/,""), anonKey:bd.querySelector("#fAnonKey").value.trim() };
     if(!cfg.url||!cfg.anonKey){ toast("Rellena Project URL y anon key"); return; }
     state.sync=state.sync||{}; state.sync.supabaseConfig=cfg;
-    sbClient=null;
-    saveState(); closeModal(); renderSyncCard(); syncClipsForCurrentMatch();
+    sbClient=null; teamsSyncWarned=false; matchesSyncWarned=false;
+    saveState(); closeModal(); renderSyncCard(); syncClipsForCurrentMatch(); startTeamsSync(); startMatchesSync(); startAppMetaSync();
     toast("Sincronización configurada ✅");
   };
   const clearBtn=bd.querySelector("#mClear");
   if(clearBtn) clearBtn.onclick=()=>{
     if(!confirm("¿Quitar la configuración de sincronización?")) return;
-    state.sync.supabaseConfig=null; stopClipsListener(); saveState(); closeModal(); renderSyncCard();
+    state.sync.supabaseConfig=null; stopClipsListener(); stopTeamsSync(); stopMatchesSync(); stopAppMetaSync(); saveState(); closeModal(); renderSyncCard();
   };
 }
 
@@ -2804,6 +3081,9 @@ function init(){
   refreshHeader();
   showTab("inicio");
   syncClipsForCurrentMatch();
+  startTeamsSync();
+  startMatchesSync();
+  startAppMetaSync();
   checkInviteFromUrl();
   clockInterval=setInterval(()=>{ if(curMatch() && curMatch().timer.running) updateClockDisplay(); }, 1000);
   window.addEventListener("beforeunload", ()=>{ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){} });
