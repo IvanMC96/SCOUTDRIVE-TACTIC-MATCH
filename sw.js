@@ -1,6 +1,6 @@
 /* ScoutDrive ABP Tactic — service worker: cachea la app para que funcione instalada y sin conexión. */
-const CACHE_NAME = "scoutdrive-shell-v1";
-const SHELL_FILES = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
+const CACHE_NAME = "scoutdrive-shell-v2";
+const SHELL_FILES = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png", "./favicon-32.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
