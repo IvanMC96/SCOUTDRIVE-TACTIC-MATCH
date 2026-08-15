@@ -332,6 +332,30 @@ select{-webkit-appearance:none;appearance:none;background-image:linear-gradient(
 .home-match-card .info .d{font-size:11.5px;color:var(--sub);}
 .home-match-card.current{border-color:var(--accent2);}
 
+/* ---------- Adaptación a tablet / ordenador ---------- */
+/* En móvil (por debajo de 700px) no cambia nada: es el layout original, ya probado.
+   A partir de aquí, en pantallas más anchas, la app se centra como una "columna" cómoda
+   de leer y usar (en vez de estirarse borde a borde), y la pizarra/tablero gana tamaño
+   porque su ancho es relativo al contenedor. */
+@media (min-width:700px){
+  body{background:var(--bg2);}
+  #app{max-width:760px;margin:0 auto;height:100vh;height:100dvh;
+    box-shadow:0 0 0 1px var(--line),0 10px 50px rgba(0,0,0,.5);background:var(--bg);}
+  #bottomnav{left:50%;right:auto;transform:translateX(-50%);width:100%;max-width:760px;justify-content:center;}
+  .fab-mic{right:calc(50vw - 380px + 16px);}
+  .modal-backdrop{align-items:center;}
+}
+@media (min-width:1100px){
+  #app{max-width:980px;}
+  #bottomnav{max-width:980px;}
+  .fab-mic{right:calc(50vw - 490px + 16px);}
+  .home-stats{grid-template-columns:repeat(3,1fr);}
+  .roster-grid{grid-template-columns:repeat(auto-fill,minmax(104px,1fr));}
+}
+@media (min-width:700px) and (orientation:landscape){
+  #app{height:100vh;height:100dvh;}
+}
+
 </style>
 <body>
 <div id="app">
@@ -2157,7 +2181,7 @@ async function exportDiagramGrid(title, diagram, style, filename, teamId){
   canvas.width=cols*cellW+pad*(cols+1);
   canvas.height=titleH+rows*(cellH+labelH)+pad*(rows+1);
   const ctx=canvas.getContext("2d");
-  ctx.fillStyle="#0d1b3e"; ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle="#0f1115"; ctx.fillRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle="#fff"; ctx.font="bold 26px sans-serif"; ctx.fillText(title, pad, 34);
   for(let i=0;i<diagram.variants.length;i++){
     const col=i%cols, row=Math.floor(i/cols);
@@ -2782,6 +2806,16 @@ function init(){
   checkInviteFromUrl();
   clockInterval=setInterval(()=>{ if(curMatch() && curMatch().timer.running) updateClockDisplay(); }, 1000);
   window.addEventListener("beforeunload", ()=>{ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){} });
+  registerServiceWorker();
+}
+function registerServiceWorker(){
+  // Solo tiene sentido en la versión publicada (http/https) — la versión de archivo único
+  // (file://) no soporta service workers y no trae sw.js, así que se ignora silenciosamente.
+  if(!("serviceWorker" in navigator)) return;
+  if(location.protocol!=="http:" && location.protocol!=="https:") return;
+  window.addEventListener("load", ()=>{
+    navigator.serviceWorker.register("./sw.js").catch(()=>{});
+  });
 }
 document.addEventListener("DOMContentLoaded", init);
 })();
